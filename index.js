@@ -3,8 +3,9 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const axios = require('axios');
+const cors = require('cors');   // <-- ADDED
 
-// ---------- Firebase Admin SDK Initialization (with error logging) ----------
+// ---------- Firebase Admin SDK Initialization ----------
 const serviceAccount = {
   projectId: process.env.FIREBASE_PROJECT_ID,
   clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
@@ -28,6 +29,11 @@ try {
 
 const db = admin.firestore();
 const app = express();
+
+// ---------- CORS (must be first middleware) ----------
+app.use(cors());              // <-- ADDED
+app.options('*', cors());     // <-- ADDED (handles preflight OPTIONS)
+
 app.use(express.json());
 
 // ---------- Environment Variables for WhatsApp ----------
