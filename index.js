@@ -3,7 +3,7 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const axios = require('axios');
-const cors = require('cors');   // <-- ADDED
+const cors = require('cors');
 
 // ---------- Firebase Admin SDK Initialization ----------
 const serviceAccount = {
@@ -30,10 +30,8 @@ try {
 const db = admin.firestore();
 const app = express();
 
-// ---------- CORS (must be first middleware) ----------
-app.use(cors());              // <-- ADDED
-app.options('*', cors());     // <-- ADDED (handles preflight OPTIONS)
-
+// ---------- CORS (handles preflight automatically) ----------
+app.use(cors());   // This alone responds to OPTIONS preflight requests
 app.use(express.json());
 
 // ---------- Environment Variables for WhatsApp ----------
