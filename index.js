@@ -30,8 +30,9 @@ try {
 const db = admin.firestore();
 const app = express();
 
-// ---------- CORS (handles preflight automatically) ----------
+// ---------- CORS ----------
 app.use(cors());
+app.options('*', cors());
 app.use(express.json());
 
 // ---------- Environment Variables ----------
@@ -41,11 +42,17 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !VERIFY_TOKEN) {
   console.error('Missing WhatsApp env vars');
+  console.error('PHONE_NUMBER_ID:', !!PHONE_NUMBER_ID);
+  console.error('ACCESS_TOKEN:', !!ACCESS_TOKEN);
+  console.error('VERIFY_TOKEN:', !!VERIFY_TOKEN);
   process.exit(1);
 }
 console.log('✅ WhatsApp environment variables loaded');
+console.log(`📞 PHONE_NUMBER_ID: ${PHONE_NUMBER_ID}`);
+console.log(`🔑 ACCESS_TOKEN length: ${ACCESS_TOKEN.length}`);
+console.log(`🔐 VERIFY_TOKEN: ${VERIFY_TOKEN}`);
 
-// ---------- Helper: Send WhatsApp message with detailed error logging ----------
+// ---------- Helper: Send WhatsApp message with detailed logging ----------
 async function sendWhatsAppMessage(to, text) {
   const url = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
   const payload = {
@@ -55,6 +62,10 @@ async function sendWhatsAppMessage(to, text) {
     type: 'text',
     text: { preview_url: false, body: text },
   };
+  console.log('📤 WhatsApp API request:', {
+    url,
+    payload: { ...payload, to, text: payload.text.body }, // safe logging
+  });
   try {
     const response = await axios.post(url, payload, {
       headers: {
@@ -62,10 +73,10 @@ async function sendWhatsAppMessage(to, text) {
         'Content-Type': 'application/json',
       },
     });
+    console.log('✅ WhatsApp API success:', response.data);
     return response.data;
   } catch (err) {
-    // Log full error for debugging
-    console.error('WhatsApp API error:', err.response?.data || err.message);
+    console.error('❌ WhatsApp API error:', err.response?.data || err.message);
     throw new Error(`WhatsApp API error: ${err.response?.data?.error?.message || err.message}`);
   }
 }
@@ -110,9 +121,9 @@ app.post('/webhook', async (req, res) => {
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             whatsappMessageId: message.id,
           });
-        console.log(`Incoming from ${from} stored`);
+        console.log(`Incoming from ${from} stored for customer ${customerId}`);
       } else {
-        console.warn(`No customer for ${from}`);
+        console.warn(`No customer found for ${from}`);
       }
     }
     res.sendStatus(200);
@@ -161,16 +172,15 @@ app.post('/send-message', async (req, res) => {
         whatsappMessageId: apiResponse.messages?.[0]?.id || null,
         status: 'sent',
       });
-    console.log(`Message sent to ${cleaned}`);
+    console.log(`✅ Message sent to ${cleaned}`);
     res.json({ success: true, messageId: apiResponse.messages?.[0]?.id });
   } catch (err) {
-    console.error('Send message error:', err.message);
-    // Return the actual error to the client for debugging
+    console.error('❌ Send message error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ---------- Health check endpoint ----------
+// ---------- Health check ----------
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 const PORT = process.env.PORT || 3000;
