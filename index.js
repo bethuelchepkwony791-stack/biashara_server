@@ -30,9 +30,8 @@ try {
 const db = admin.firestore();
 const app = express();
 
-// ---------- CORS ----------
+// ---------- CORS (only app.use(cors()) is needed) ----------
 app.use(cors());
-app.options('*', cors());
 app.use(express.json());
 
 // ---------- Environment Variables ----------
@@ -48,11 +47,8 @@ if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !VERIFY_TOKEN) {
   process.exit(1);
 }
 console.log('✅ WhatsApp environment variables loaded');
-console.log(`📞 PHONE_NUMBER_ID: ${PHONE_NUMBER_ID}`);
-console.log(`🔑 ACCESS_TOKEN length: ${ACCESS_TOKEN.length}`);
-console.log(`🔐 VERIFY_TOKEN: ${VERIFY_TOKEN}`);
 
-// ---------- Helper: Send WhatsApp message with detailed logging ----------
+// ---------- Helper: Send WhatsApp message ----------
 async function sendWhatsAppMessage(to, text) {
   const url = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
   const payload = {
@@ -62,10 +58,6 @@ async function sendWhatsAppMessage(to, text) {
     type: 'text',
     text: { preview_url: false, body: text },
   };
-  console.log('📤 WhatsApp API request:', {
-    url,
-    payload: { ...payload, to, text: payload.text.body }, // safe logging
-  });
   try {
     const response = await axios.post(url, payload, {
       headers: {
@@ -73,10 +65,9 @@ async function sendWhatsAppMessage(to, text) {
         'Content-Type': 'application/json',
       },
     });
-    console.log('✅ WhatsApp API success:', response.data);
     return response.data;
   } catch (err) {
-    console.error('❌ WhatsApp API error:', err.response?.data || err.message);
+    console.error('WhatsApp API error:', err.response?.data || err.message);
     throw new Error(`WhatsApp API error: ${err.response?.data?.error?.message || err.message}`);
   }
 }
@@ -94,7 +85,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// ---------- Incoming messages (webhook POST) ----------
+// ---------- Incoming messages ----------
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
@@ -121,9 +112,9 @@ app.post('/webhook', async (req, res) => {
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             whatsappMessageId: message.id,
           });
-        console.log(`Incoming from ${from} stored for customer ${customerId}`);
+        console.log(`Incoming from ${from} stored`);
       } else {
-        console.warn(`No customer found for ${from}`);
+        console.warn(`No customer for ${from}`);
       }
     }
     res.sendStatus(200);
@@ -133,31 +124,24 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ---------- Send message endpoint (called from Flutter) ----------
+// ---------- Send message endpoint ----------
 app.post('/send-message', async (req, res) => {
-  console.log('📨 /send-message called');
   const idToken = req.headers.authorization?.split('Bearer ')[1];
-  if (!idToken) {
-    return res.status(401).json({ error: 'Missing authentication token' });
-  }
+  if (!idToken) return res.status(401).json({ error: 'Missing token' });
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    if (!decoded) throw new Error('Invalid token');
+    await admin.auth().verifyIdToken(idToken);
   } catch (err) {
-    console.error('Auth error:', err.message);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const { to, text, customerId } = req.body;
   if (!to || !text || !customerId) {
-    return res.status(400).json({ error: 'Missing required fields' });
+    return res.status(400).json({ error: 'Missing fields' });
   }
 
-  // Clean phone number to international format (254XXXXXXXXX)
   let cleaned = to.replace(/\D/g, '');
   if (cleaned.startsWith('0')) cleaned = '254' + cleaned.substring(1);
   if (!cleaned.startsWith('254')) cleaned = '254' + cleaned;
-  console.log(`Sending to ${cleaned}: "${text}"`);
 
   try {
     const apiResponse = await sendWhatsAppMessage(cleaned, text);
@@ -172,10 +156,8 @@ app.post('/send-message', async (req, res) => {
         whatsappMessageId: apiResponse.messages?.[0]?.id || null,
         status: 'sent',
       });
-    console.log(`✅ Message sent to ${cleaned}`);
-    res.json({ success: true, messageId: apiResponse.messages?.[0]?.id });
+    res.json({ success: true });
   } catch (err) {
-    console.error('❌ Send message error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
