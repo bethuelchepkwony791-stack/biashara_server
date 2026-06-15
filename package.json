@@ -1,20 +1,24 @@
 {
   "name": "biashara_server",
   "version": "1.0.0",
-  "description": "",
+  "description": "WhatsApp Business API backend for BiasharaOS",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["whatsapp", "biashara", "firebase"],
+  "author": "BiasharaOS",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "axios": "^1.17.0",
-    "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "firebase-admin": "^10.3.0"
+    "axios": "^1.7.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0"
   }
 }

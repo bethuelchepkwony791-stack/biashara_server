@@ -30,7 +30,6 @@ try {
 const db = admin.firestore();
 const app = express();
 
-// ---------- CORS (only app.use(cors()) is needed) ----------
 app.use(cors());
 app.use(express.json());
 
@@ -41,12 +40,17 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !VERIFY_TOKEN) {
   console.error('Missing WhatsApp env vars');
-  console.error('PHONE_NUMBER_ID:', !!PHONE_NUMBER_ID);
-  console.error('ACCESS_TOKEN:', !!ACCESS_TOKEN);
-  console.error('VERIFY_TOKEN:', !!VERIFY_TOKEN);
   process.exit(1);
 }
 console.log('✅ WhatsApp environment variables loaded');
+
+// ---------- Helper: Normalize phone number to match Firestore storage ----------
+function normalizePhone(phone) {
+  let cleaned = phone.replace(/\D/g, '');
+  if (cleaned.startsWith('0')) cleaned = '254' + cleaned.substring(1);
+  if (!cleaned.startsWith('254')) cleaned = '254' + cleaned;
+  return cleaned;
+}
 
 // ---------- Helper: Send WhatsApp message ----------
 async function sendWhatsAppMessage(to, text) {
@@ -60,10 +64,7 @@ async function sendWhatsAppMessage(to, text) {
   };
   try {
     const response = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
     });
     return response.data;
   } catch (err) {
@@ -85,21 +86,29 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// ---------- Incoming messages ----------
+// ---------- Incoming messages (now normalizes phone numbers) ----------
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
     const entry = body.entry?.[0];
     const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    const value = changes?.value;
+    const message = value?.messages?.[0];
+    const contact = value?.contacts?.[0];
+
     if (message && message.type === 'text') {
-      const from = message.from;
+      const rawFrom = message.from;
+      const normalizedFrom = normalizePhone(rawFrom);
       const text = message.text.body;
+      const messageId = message.id;
+
+      // Look for customer with this normalized phone number
       const customerSnapshot = await db
         .collection('customers')
-        .where('phoneNumbers', 'array-contains', from)
+        .where('phoneNumbers', 'array-contains', normalizedFrom)
         .limit(1)
         .get();
+
       if (!customerSnapshot.empty) {
         const customerId = customerSnapshot.docs[0].id;
         await db
@@ -110,11 +119,13 @@ app.post('/webhook', async (req, res) => {
             direction: 'incoming',
             text: text,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            whatsappMessageId: message.id,
+            whatsappMessageId: messageId,
+            status: 'delivered',
           });
-        console.log(`Incoming from ${from} stored`);
+        console.log(`✅ Incoming message stored for customer ${customerId}`);
       } else {
-        console.warn(`No customer for ${from}`);
+        console.warn(`No customer found for phone ${normalizedFrom} (raw: ${rawFrom})`);
+        // Optionally, create a new customer record automatically here
       }
     }
     res.sendStatus(200);
@@ -124,7 +135,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ---------- Send message endpoint ----------
+// ---------- Send message endpoint (also normalizes) ----------
 app.post('/send-message', async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) return res.status(401).json({ error: 'Missing token' });
@@ -139,12 +150,9 @@ app.post('/send-message', async (req, res) => {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  let cleaned = to.replace(/\D/g, '');
-  if (cleaned.startsWith('0')) cleaned = '254' + cleaned.substring(1);
-  if (!cleaned.startsWith('254')) cleaned = '254' + cleaned;
-
+  const normalizedTo = normalizePhone(to);
   try {
-    const apiResponse = await sendWhatsAppMessage(cleaned, text);
+    const apiResponse = await sendWhatsAppMessage(normalizedTo, text);
     await db
       .collection('chats')
       .doc(customerId)
