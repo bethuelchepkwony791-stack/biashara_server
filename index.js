@@ -44,12 +44,20 @@ if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !VERIFY_TOKEN) {
 }
 console.log('✅ WhatsApp environment variables loaded');
 
-// ---------- Helper: Normalize phone number to match Firestore storage ----------
+// ---------- Normalize phone number to a standard format (254XXXXXXXXX) ----------
 function normalizePhone(phone) {
   let cleaned = phone.replace(/\D/g, '');
   if (cleaned.startsWith('0')) cleaned = '254' + cleaned.substring(1);
   if (!cleaned.startsWith('254')) cleaned = '254' + cleaned;
   return cleaned;
+}
+
+// Generate alternative formats for searching
+function getPhoneVariants(phone) {
+  const normalized = normalizePhone(phone);
+  const withLeadingZero = '0' + normalized.substring(3);
+  const withPlus = '+' + normalized;
+  return [normalized, withLeadingZero, withPlus, phone]; // also original
 }
 
 // ---------- Helper: Send WhatsApp message ----------
@@ -86,7 +94,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// ---------- Incoming messages (now normalizes phone numbers) ----------
+// ---------- Incoming messages (robust phone matching) ----------
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
@@ -97,20 +105,34 @@ app.post('/webhook', async (req, res) => {
     const contact = value?.contacts?.[0];
 
     if (message && message.type === 'text') {
-      const rawFrom = message.from;
-      const normalizedFrom = normalizePhone(rawFrom);
+      const rawFrom = message.from;  // e.g., "254712345678" (no plus)
       const text = message.text.body;
       const messageId = message.id;
 
-      // Look for customer with this normalized phone number
-      const customerSnapshot = await db
-        .collection('customers')
-        .where('phoneNumbers', 'array-contains', normalizedFrom)
-        .limit(1)
-        .get();
+      console.log(`📩 Incoming message from ${rawFrom}: "${text}"`);
 
-      if (!customerSnapshot.empty) {
-        const customerId = customerSnapshot.docs[0].id;
+      // Get all possible phone number variants
+      const variants = getPhoneVariants(rawFrom);
+      console.log(`Searching for variants: ${variants.join(', ')}`);
+
+      // Find customer where phoneNumbers contains any of the variants
+      let customerDoc = null;
+      for (const variant of variants) {
+        const snapshot = await db
+          .collection('customers')
+          .where('phoneNumbers', 'array-contains', variant)
+          .limit(1)
+          .get();
+        if (!snapshot.empty) {
+          customerDoc = snapshot.docs[0];
+          console.log(`✅ Found customer with variant: ${variant}`);
+          break;
+        }
+      }
+
+      if (customerDoc) {
+        const customerId = customerDoc.id;
+        // Store the incoming message
         await db
           .collection('chats')
           .doc(customerId)
@@ -123,9 +145,19 @@ app.post('/webhook', async (req, res) => {
             status: 'delivered',
           });
         console.log(`✅ Incoming message stored for customer ${customerId}`);
+
+        // Optionally, ensure the customer's phoneNumbers includes the normalized version
+        const currentPhones = customerDoc.data().phoneNumbers || [];
+        const normalized = normalizePhone(rawFrom);
+        if (!currentPhones.includes(normalized)) {
+          await customerDoc.ref.update({
+            phoneNumbers: admin.firestore.FieldValue.arrayUnion(normalized)
+          });
+          console.log(`📞 Added normalized phone ${normalized} to customer ${customerId}`);
+        }
       } else {
-        console.warn(`No customer found for phone ${normalizedFrom} (raw: ${rawFrom})`);
-        // Optionally, create a new customer record automatically here
+        console.warn(`❌ No customer found for phone ${rawFrom}`);
+        // You could create a new customer record here if desired
       }
     }
     res.sendStatus(200);
@@ -135,7 +167,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ---------- Send message endpoint (also normalizes) ----------
+// ---------- Send message endpoint (already robust) ----------
 app.post('/send-message', async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   if (!idToken) return res.status(401).json({ error: 'Missing token' });
