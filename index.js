@@ -5,7 +5,6 @@ const admin = require('firebase-admin');
 const axios = require('axios');
 const cors = require('cors');
 
-// ---------- Firebase Admin SDK ----------
 const serviceAccount = {
   projectId: process.env.FIREBASE_PROJECT_ID,
   clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
@@ -17,23 +16,13 @@ if (!serviceAccount.projectId || !serviceAccount.clientEmail || !serviceAccount.
   process.exit(1);
 }
 
-try {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-  console.log('✅ Firebase Admin SDK initialized');
-} catch (err) {
-  console.error('❌ Firebase init error:', err.message);
-  process.exit(1);
-}
-
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-// ---------- Environment Variables ----------
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -44,7 +33,6 @@ if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !VERIFY_TOKEN) {
 }
 console.log('✅ WhatsApp environment variables loaded');
 
-// ---------- Helper: Normalize phone ----------
 function normalizePhone(phone) {
   let cleaned = phone.replace(/\D/g, '');
   if (cleaned.startsWith('0')) cleaned = '254' + cleaned.substring(1);
@@ -57,7 +45,6 @@ function getPhoneVariants(phone) {
   return [norm, '0' + norm.substring(3), '+' + norm, phone];
 }
 
-// ---------- Helper: Send WhatsApp message ----------
 async function sendWhatsAppMessage(to, text) {
   const url = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
   const payload = {
@@ -78,7 +65,6 @@ async function sendWhatsAppMessage(to, text) {
   }
 }
 
-// ---------- Webhook verification ----------
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -90,7 +76,6 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// ---------- Incoming messages ----------
 app.post('/webhook', async (req, res) => {
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -125,37 +110,33 @@ app.post('/webhook', async (req, res) => {
           phoneNumbers: admin.firestore.FieldValue.arrayUnion(norm)
         }).catch(() => {});
         console.log(`✅ Message stored for ${customerId}`);
+        res.sendStatus(200);
       } else {
         console.warn(`❌ No customer found for ${from} (variants: ${variants.join(', ')})`);
+        // Optionally create a new customer record here if desired
+        res.sendStatus(200); // still acknowledge to Meta
       }
+    } else {
+      res.sendStatus(200);
     }
-    res.sendStatus(200);
   } catch (err) {
     console.error('Webhook error:', err);
     res.sendStatus(500);
   }
 });
 
-// ---------- Send message endpoint ----------
 app.post('/send-message', async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
-  if (!idToken) {
-    console.warn('Missing token');
-    return res.status(401).json({ error: 'Missing token' });
-  }
-
+  if (!idToken) return res.status(401).json({ error: 'Missing token' });
   try {
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
-    console.log(`✅ Token verified for UID: ${decodedToken.uid}`);
+    await admin.auth().verifyIdToken(idToken);
   } catch (err) {
     console.error('Token verification error:', err.message);
     return res.status(401).json({ error: `Unauthorized: ${err.message}` });
   }
 
   const { to, text, customerId } = req.body;
-  if (!to || !text || !customerId) {
-    return res.status(400).json({ error: 'Missing fields' });
-  }
+  if (!to || !text || !customerId) return res.status(400).json({ error: 'Missing fields' });
 
   const cleaned = normalizePhone(to);
   try {
@@ -174,7 +155,6 @@ app.post('/send-message', async (req, res) => {
   }
 });
 
-// ---------- Health check ----------
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 const PORT = process.env.PORT || 3000;
