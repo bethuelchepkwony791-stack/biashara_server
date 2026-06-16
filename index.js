@@ -44,7 +44,7 @@ if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !VERIFY_TOKEN) {
 }
 console.log('✅ WhatsApp environment variables loaded');
 
-// ---------- Normalize phone number to a standard format (254XXXXXXXXX) ----------
+// ---------- Helper: Normalize phone ----------
 function normalizePhone(phone) {
   let cleaned = phone.replace(/\D/g, '');
   if (cleaned.startsWith('0')) cleaned = '254' + cleaned.substring(1);
@@ -52,12 +52,9 @@ function normalizePhone(phone) {
   return cleaned;
 }
 
-// Generate alternative formats for searching
 function getPhoneVariants(phone) {
-  const normalized = normalizePhone(phone);
-  const withLeadingZero = '0' + normalized.substring(3);
-  const withPlus = '+' + normalized;
-  return [normalized, withLeadingZero, withPlus, phone]; // also original
+  const norm = normalizePhone(phone);
+  return [norm, '0' + norm.substring(3), '+' + norm, phone];
 }
 
 // ---------- Helper: Send WhatsApp message ----------
@@ -87,77 +84,49 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('Webhook verified');
     res.status(200).send(challenge);
   } else {
     res.status(403).send('Verification failed');
   }
 });
 
-// ---------- Incoming messages (robust phone matching) ----------
+// ---------- Incoming messages ----------
 app.post('/webhook', async (req, res) => {
   try {
-    const body = req.body;
-    const entry = body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const message = value?.messages?.[0];
-    const contact = value?.contacts?.[0];
-
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (message && message.type === 'text') {
-      const rawFrom = message.from;  // e.g., "254712345678" (no plus)
+      const from = message.from;
       const text = message.text.body;
       const messageId = message.id;
 
-      console.log(`📩 Incoming message from ${rawFrom}: "${text}"`);
+      console.log(`📩 Incoming from ${from}: "${text}"`);
 
-      // Get all possible phone number variants
-      const variants = getPhoneVariants(rawFrom);
-      console.log(`Searching for variants: ${variants.join(', ')}`);
-
-      // Find customer where phoneNumbers contains any of the variants
-      let customerDoc = null;
+      const variants = getPhoneVariants(from);
+      let customerId = null;
       for (const variant of variants) {
-        const snapshot = await db
-          .collection('customers')
-          .where('phoneNumbers', 'array-contains', variant)
-          .limit(1)
-          .get();
+        const snapshot = await db.collection('customers').where('phoneNumbers', 'array-contains', variant).limit(1).get();
         if (!snapshot.empty) {
-          customerDoc = snapshot.docs[0];
-          console.log(`✅ Found customer with variant: ${variant}`);
+          customerId = snapshot.docs[0].id;
+          console.log(`✅ Found customer ${customerId} with variant ${variant}`);
           break;
         }
       }
 
-      if (customerDoc) {
-        const customerId = customerDoc.id;
-        // Store the incoming message
-        await db
-          .collection('chats')
-          .doc(customerId)
-          .collection('messages')
-          .add({
-            direction: 'incoming',
-            text: text,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            whatsappMessageId: messageId,
-            status: 'delivered',
-          });
-        console.log(`✅ Incoming message stored for customer ${customerId}`);
-
-        // Optionally, ensure the customer's phoneNumbers includes the normalized version
-        const currentPhones = customerDoc.data().phoneNumbers || [];
-        const normalized = normalizePhone(rawFrom);
-        if (!currentPhones.includes(normalized)) {
-          await customerDoc.ref.update({
-            phoneNumbers: admin.firestore.FieldValue.arrayUnion(normalized)
-          });
-          console.log(`📞 Added normalized phone ${normalized} to customer ${customerId}`);
-        }
+      if (customerId) {
+        await db.collection('chats').doc(customerId).collection('messages').add({
+          direction: 'incoming',
+          text: text,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          whatsappMessageId: messageId,
+          status: 'delivered',
+        });
+        const norm = normalizePhone(from);
+        await db.collection('customers').doc(customerId).update({
+          phoneNumbers: admin.firestore.FieldValue.arrayUnion(norm)
+        }).catch(() => {});
+        console.log(`✅ Message stored for ${customerId}`);
       } else {
-        console.warn(`❌ No customer found for phone ${rawFrom}`);
-        // You could create a new customer record here if desired
+        console.warn(`❌ No customer found for ${from} (variants: ${variants.join(', ')})`);
       }
     }
     res.sendStatus(200);
@@ -167,14 +136,20 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ---------- Send message endpoint (already robust) ----------
+// ---------- Send message endpoint ----------
 app.post('/send-message', async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
-  if (!idToken) return res.status(401).json({ error: 'Missing token' });
+  if (!idToken) {
+    console.warn('Missing token');
+    return res.status(401).json({ error: 'Missing token' });
+  }
+
   try {
-    await admin.auth().verifyIdToken(idToken);
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    console.log(`✅ Token verified for UID: ${decodedToken.uid}`);
   } catch (err) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    console.error('Token verification error:', err.message);
+    return res.status(401).json({ error: `Unauthorized: ${err.message}` });
   }
 
   const { to, text, customerId } = req.body;
@@ -182,22 +157,19 @@ app.post('/send-message', async (req, res) => {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  const normalizedTo = normalizePhone(to);
+  const cleaned = normalizePhone(to);
   try {
-    const apiResponse = await sendWhatsAppMessage(normalizedTo, text);
-    await db
-      .collection('chats')
-      .doc(customerId)
-      .collection('messages')
-      .add({
-        direction: 'outgoing',
-        text: text,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        whatsappMessageId: apiResponse.messages?.[0]?.id || null,
-        status: 'sent',
-      });
+    const apiResponse = await sendWhatsAppMessage(cleaned, text);
+    await db.collection('chats').doc(customerId).collection('messages').add({
+      direction: 'outgoing',
+      text: text,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      whatsappMessageId: apiResponse.messages?.[0]?.id || null,
+      status: 'sent',
+    });
     res.json({ success: true });
   } catch (err) {
+    console.error('Send error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -206,9 +178,4 @@ app.post('/send-message', async (req, res) => {
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-}).on('error', (err) => {
-  console.error('❌ Server failed to start:', err);
-  process.exit(1);
-});
+app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
