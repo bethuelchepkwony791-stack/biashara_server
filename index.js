@@ -113,8 +113,7 @@ app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
       } else {
         console.warn(`❌ No customer found for ${from} (variants: ${variants.join(', ')})`);
-        // Optionally create a new customer record here if desired
-        res.sendStatus(200); // still acknowledge to Meta
+        res.sendStatus(200);
       }
     } else {
       res.sendStatus(200);
@@ -127,30 +126,35 @@ app.post('/webhook', async (req, res) => {
 
 app.post('/send-message', async (req, res) => {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
-  if (!idToken) return res.status(401).json({ error: 'Missing token' });
+  if (!idToken) {
+    console.warn('❌ Missing token');
+    return res.status(401).json({ error: 'Missing token' });
+  }
+
   try {
-    await admin.auth().verifyIdToken(idToken);
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    console.log(`✅ Token verified for UID: ${decoded.uid}`);
   } catch (err) {
-    console.error('Token verification error:', err.message);
+    console.error('❌ Token verification error:', err.message);
     return res.status(401).json({ error: `Unauthorized: ${err.message}` });
   }
 
   const { to, text, customerId } = req.body;
-  if (!to || !text || !customerId) return res.status(400).json({ error: 'Missing fields' });
+  if (!to || !text || !customerId) {
+    console.warn('❌ Missing fields in request');
+    return res.status(400).json({ error: 'Missing fields' });
+  }
 
   const cleaned = normalizePhone(to);
+  console.log(`📤 Sending to ${cleaned}: "${text.substring(0, 50)}..."`);
+
   try {
     const apiResponse = await sendWhatsAppMessage(cleaned, text);
-    await db.collection('chats').doc(customerId).collection('messages').add({
-      direction: 'outgoing',
-      text: text,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      whatsappMessageId: apiResponse.messages?.[0]?.id || null,
-      status: 'sent',
-    });
-    res.json({ success: true });
+    console.log(`✅ Message sent successfully to ${cleaned}`);
+    // DO NOT write to Firestore here – Flutter handles it.
+    res.json({ success: true, messageId: apiResponse.messages?.[0]?.id || null });
   } catch (err) {
-    console.error('Send error:', err.message);
+    console.error('❌ Send error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
